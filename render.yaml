@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: media-studio-proxy
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_TOKEN
+        generateValue: true
+      - key: PROVIDER_ORDER
+        value: photoroom,removebg,clipdrop
+      - key: PHOTOROOM_API_KEY
+        sync: false
+      - key: PHOTOROOM_SANDBOX
+        value: "true"
+      - key: REMOVEBG_API_KEY
+        sync: false
+      - key: CLIPDROP_API_KEY
+        sync: false
+      - key: RATE_LIMIT_PER_HOUR
+        value: "30"
