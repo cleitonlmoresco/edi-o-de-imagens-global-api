@@ -7,7 +7,7 @@ As chaves dos provedores ficam **somente no servidor** — o app nunca as recebe
 media-studio-app/
 ├── App.js                  # tela principal (escolher foto / remover fundo)
 ├── src/services/api.js     # chamada ao proxy (timeout de 60 s)
-├── ci/github-actions.yml   # workflow de CI (pronto para .github/workflows)
+├── .github/workflows/ci.yml # workflow de CI (testes, lint e expo-doctor)
 └── server/
     ├── index.js            # proxy com fallback entre provedores
     ├── .env.example        # modelo de configuração
@@ -108,11 +108,8 @@ em JSON. Não precisam de chaves reais.
 
 ## Qualidade e CI
 
-O workflow pronto está em `ci/github-actions.yml`. Ele roda os testes do
-servidor em Node 20, 22 e 24, a auditoria de dependências, o lint do app e o
-`expo-doctor`. Para ativá-lo no GitHub, copie o arquivo para
-`.github/workflows/ci.yml`; o token usado no push precisa do escopo `workflow`
-(`gh auth refresh -s workflow`).
+O workflow está em `.github/workflows/ci.yml`. Ele roda os testes do servidor em
+Node 20, 22 e 24, a auditoria de dependências, o lint do app e o `expo-doctor`.
 
 ## Segurança
 
