@@ -42,6 +42,19 @@ test('GET /healthz é público', async () => {
   assert.deepEqual(await res.json(), { ok: true });
 });
 
+test('respostas trazem cabeçalhos de segurança do helmet', async () => {
+  const res = await fetch(`${base}/healthz`);
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(res.headers.get('x-frame-options'), 'SAMEORIGIN');
+  assert.equal(res.headers.get('x-powered-by'), null);
+});
+
+test('rota desconhecida devolve 404 em JSON', async () => {
+  const res = await fetch(`${base}/nao-existe`);
+  assert.equal(res.status, 404);
+  assert.deepEqual(await res.json(), { error: 'Rota não encontrada.' });
+});
+
 test('GET /health exige token', async () => {
   const semToken = await fetch(`${base}/health`);
   assert.equal(semToken.status, 401);

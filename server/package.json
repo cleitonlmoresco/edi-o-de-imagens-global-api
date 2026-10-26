@@ -1,20 +1,27 @@
 {
   "name": "server",
   "version": "1.0.0",
-  "description": "",
+  "description": "Proxy Node/Express que remove o fundo de imagens usando Photoroom, remove.bg ou Clipdrop",
   "main": "index.js",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "start": "node index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "audit": "npm audit --omit=dev"
   },
-  "keywords": [],
+  "keywords": [
+    "background-removal",
+    "express",
+    "proxy"
+  ],
   "type": "commonjs",
+  "private": true,
   "dependencies": {
     "dotenv": "^18.0.9",
     "express": "^5.3.0",
-    "express-rate-limit": "^8.7.1"
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0"
   }
 }

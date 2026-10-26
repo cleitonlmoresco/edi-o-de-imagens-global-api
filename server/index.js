@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const crypto = require('crypto');
 const express = require('express');
+const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -160,9 +161,13 @@ app.disable('x-powered-by');
 if (process.env.TRUST_PROXY) {
   app.set('trust proxy', Number(process.env.TRUST_PROXY) || process.env.TRUST_PROXY);
 }
+// Cabeçalhos de segurança (nosniff, frame-ancestors, HSTS, etc.).
+// A API só devolve JSON; a CSP padrão do helmet não atrapalha o cliente nativo.
+app.use(helmet());
 app.use(express.json({ limit: JSON_LIMIT }));
 
 app.get('/healthz', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
   res.json({ ok: true });
 });
 
@@ -238,6 +243,8 @@ app.post(
     });
   }
 });
+
+app.use((_req, res) => res.status(404).json({ error: 'Rota não encontrada.' }));
 
 app.use((err, _req, res, _next) => {
   if (err.type === 'entity.too.large') {
