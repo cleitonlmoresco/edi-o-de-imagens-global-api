@@ -13,16 +13,24 @@ import { StatusBar } from 'expo-status-bar';
 import * as ImagePicker from 'expo-image-picker';
 import { removeBackground } from './src/services/api';
 
+const MAX_UPLOAD_MB = 10;
+
 export default function App() {
   const [source, setSource] = useState(null);
   const [result, setResult] = useState(null);
   const [provider, setProvider] = useState(null);
+  const [cached, setCached] = useState(false);
   const [loading, setLoading] = useState(false);
 
   async function pickImage() {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      Alert.alert('Permissão necessária', 'Libere o acesso às fotos para continuar.');
+      Alert.alert(
+        'Permissão necessária',
+        permission.canAskAgain
+          ? 'Libere o acesso às fotos para continuar.'
+          : 'Libere o acesso às fotos nos Ajustes do aparelho.'
+      );
       return;
     }
 
@@ -32,20 +40,31 @@ export default function App() {
       base64: true,
     });
 
-    if (!picked.canceled) {
-      setSource(picked.assets[0]);
-      setResult(null);
-      setProvider(null);
+    if (picked.canceled || !picked.assets?.length) return;
+
+    const asset = picked.assets[0];
+    if (asset.fileSize && asset.fileSize > MAX_UPLOAD_MB * 1024 * 1024) {
+      Alert.alert('Imagem muito grande', `Escolha uma imagem de até ${MAX_UPLOAD_MB} MB.`);
+      return;
     }
+
+    setSource(asset);
+    setResult(null);
+    setProvider(null);
+    setCached(false);
   }
 
   async function handleRemoveBackground() {
-    if (!source) return;
+    if (!source || loading) return;
     setLoading(true);
+    setResult(null);
+    setProvider(null);
+    setCached(false);
     try {
       const data = await removeBackground(source);
       setResult(data.image);
       setProvider(data.provider);
+      setCached(Boolean(data.cached));
     } catch (err) {
       Alert.alert('Não foi possível remover o fundo', err.message);
     } finally {
@@ -79,7 +98,15 @@ export default function App() {
         </View>
       )}
 
-      {result && provider && <Text style={styles.caption}>Processado por: {provider}</Text>}
+      {!source && (
+        <Text style={styles.hint}>Escolha uma foto para remover o fundo.</Text>
+      )}
+
+      {result && provider && (
+        <Text style={styles.caption}>
+          Processado por: {provider}{cached ? ' (cache)' : ''}
+        </Text>
+      )}
 
       <StatusBar style="auto" />
     </ScrollView>
@@ -114,6 +141,10 @@ const styles = StyleSheet.create({
   caption: {
     marginTop: 8,
     color: '#555',
+  },
+  hint: {
+    color: '#777',
+    textAlign: 'center',
   },
   spacing: {
     marginVertical: 8,

@@ -5,7 +5,12 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 
 const PORT = Number(process.env.PORT) || 3000;
-const CACHE_LIMIT = 200;
+const CACHE_LIMIT = Number(process.env.CACHE_LIMIT) || 200;
+const CACHE_MAX_BYTES = (Number(process.env.CACHE_MAX_MB) || 64) * 1024 * 1024;
+const MAX_IMAGE_MB = Number(process.env.MAX_IMAGE_MB) || 10;
+const MAX_IMAGE_BYTES = MAX_IMAGE_MB * 1024 * 1024;
+const JSON_LIMIT = process.env.JSON_LIMIT || '14mb';
+const PROVIDER_TIMEOUT_MS = Number(process.env.PROVIDER_TIMEOUT_MS) || 45000;
 const APP_TOKEN = process.env.APP_TOKEN;
 
 if (!APP_TOKEN) {
@@ -35,16 +40,32 @@ const limiter = rateLimit({
 });
 
 const cache = new Map();
+let cacheBytes = 0;
 
+// LRU real: ao acertar, a entrada vai para o fim. Além da quantidade,
+// respeita um orçamento de bytes (imagens em base64 podem ter ~13 MB cada).
 function cacheGet(key) {
-  return cache.get(key) || null;
+  const entry = cache.get(key);
+  if (!entry) return null;
+  cache.delete(key);
+  cache.set(key, entry);
+  return entry;
 }
 
 function cacheSet(key, value) {
-  if (cache.size >= CACHE_LIMIT) {
-    cache.delete(cache.keys().next().value);
+  const size = Buffer.byteLength(value.image);
+  if (size > CACHE_MAX_BYTES) return;
+  if (cache.has(key)) {
+    cacheBytes -= Buffer.byteLength(cache.get(key).image);
+    cache.delete(key);
+  }
+  while (cache.size > 0 && (cache.size >= CACHE_LIMIT || cacheBytes + size > CACHE_MAX_BYTES)) {
+    const oldest = cache.keys().next().value;
+    cacheBytes -= Buffer.byteLength(cache.get(oldest).image);
+    cache.delete(oldest);
   }
   cache.set(key, value);
+  cacheBytes += size;
 }
 
 class ProviderError extends Error {
@@ -67,6 +88,7 @@ const providers = {
         method: 'POST',
         headers: { 'x-api-key': apiKey },
         body: form,
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       });
       return res;
     },
@@ -81,6 +103,7 @@ const providers = {
         method: 'POST',
         headers: { 'X-Api-Key': process.env.REMOVEBG_API_KEY },
         body: form,
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       });
       return res;
     },
@@ -94,6 +117,7 @@ const providers = {
         method: 'POST',
         headers: { 'x-api-key': process.env.CLIPDROP_API_KEY, accept: 'image/png' },
         body: form,
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       });
       return res;
     },
@@ -130,8 +154,13 @@ async function removeBackgroundWithFallback(buffer, mime) {
 }
 
 const app = express();
-app.set('trust proxy', 1);
-app.use(express.json({ limit: '15mb' }));
+app.disable('x-powered-by');
+// Só confie em X-Forwarded-For quando estiver atrás de um proxy conhecido;
+// caso contrário, dá para burlar o rate limit falsificando o header.
+if (process.env.TRUST_PROXY) {
+  app.set('trust proxy', Number(process.env.TRUST_PROXY) || process.env.TRUST_PROXY);
+}
+app.use(express.json({ limit: JSON_LIMIT }));
 
 app.get('/healthz', (_req, res) => {
   res.json({ ok: true });
@@ -139,20 +168,57 @@ app.get('/healthz', (_req, res) => {
 
 app.get('/health', requireAppToken, (_req, res) => {
   const configured = ORDER.filter((name) => providers[name] && providers[name].enabled());
-  res.json({ ok: true, providers: configured, cacheSize: cache.size });
+  res.json({
+    ok: true,
+    providers: configured,
+    cacheSize: cache.size,
+    cacheBytes,
+    maxImageMb: MAX_IMAGE_MB,
+  });
 });
+
+function detectImageMime(buffer) {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return 'image/png';
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') {
+    return 'image/webp';
+  }
+  return null;
+}
 
 app.post(
   '/api/remove-background',
   requireAppToken,
   limiter,
   async (req, res) => {
-  const { imageBase64, mimeType } = req.body || {};
+  const { imageBase64 } = req.body || {};
   if (typeof imageBase64 !== 'string' || !imageBase64) {
     return res.status(400).json({ error: 'Envie a imagem em base64 no campo "imageBase64".' });
   }
 
-  const input = Buffer.from(imageBase64, 'base64');
+  // Aceita data URI ("data:image/png;base64,...") além do base64 puro.
+  const payload = imageBase64.replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '');
+  if (!/^[A-Za-z0-9+/=\s]+$/.test(payload)) {
+    return res.status(400).json({ error: 'Base64 inválido.' });
+  }
+
+  const input = Buffer.from(payload, 'base64');
+  if (input.length === 0) {
+    return res.status(400).json({ error: 'Imagem vazia.' });
+  }
+  if (input.length > MAX_IMAGE_BYTES) {
+    return res.status(413).json({ error: `Imagem muito grande (máximo ${MAX_IMAGE_MB} MB).` });
+  }
+
+  const mime = detectImageMime(input);
+  if (!mime) {
+    return res.status(415).json({ error: 'Formato não suportado. Envie PNG, JPEG ou WebP.' });
+  }
+
   const hash = crypto.createHash('sha256').update(input).digest('hex');
   const cached = cacheGet(hash);
   if (cached) {
@@ -160,21 +226,22 @@ app.post(
   }
 
   try {
-    const { provider, image } = await removeBackgroundWithFallback(
-      input,
-      typeof mimeType === 'string' ? mimeType : 'image/jpeg'
-    );
+    const { provider, image } = await removeBackgroundWithFallback(input, mime);
     const dataUri = `data:image/png;base64,${image.toString('base64')}`;
     cacheSet(hash, { provider, image: dataUri });
     return res.json({ provider, cached: false, image: dataUri });
   } catch (err) {
-    return res.status(503).json({ error: err.message });
+    console.error('[remove-background]', err.message);
+    return res.status(503).json({
+      error: 'Nenhum provedor conseguiu processar a imagem.',
+      detalhe: process.env.NODE_ENV === 'production' ? undefined : err.message,
+    });
   }
 });
 
 app.use((err, _req, res, _next) => {
   if (err.type === 'entity.too.large') {
-    return res.status(413).json({ error: 'Imagem muito grande (máximo 10 MB).' });
+    return res.status(413).json({ error: `Imagem muito grande (máximo ${MAX_IMAGE_MB} MB).` });
   }
   if (err.expose && err.status) {
     return res.status(err.status).json({ error: 'Requisição inválida.' });
@@ -183,6 +250,13 @@ app.use((err, _req, res, _next) => {
   return res.status(500).json({ error: 'Erro interno.' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Proxy rodando em http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  const server = app.listen(PORT, () => {
+    console.log(`Proxy rodando em http://localhost:${PORT}`);
+  });
+  const encerrar = () => server.close(() => process.exit(0));
+  process.on('SIGINT', encerrar);
+  process.on('SIGTERM', encerrar);
+}
+
+module.exports = { app, detectImageMime };
